@@ -1,0 +1,146 @@
+#!/bin/sh -e
+##:
+#h: Usage: xrec { -V | -l | -r JOB | -p JOB | -c JOB} 
+#h:
+#h: Record screen when doing a job, this way you can remember where
+#h: you where at when connecting.
+##:
+xrec() {
+    local OPTIND optopt job= ops=
+    
+    ## Parse command line arguments.
+    while getopts "Vlrpc" optopt; do
+        ops="${ops}${optopt}"
+        case $optopt in
+            \?) return 1;;
+        esac
+    done
+    shift $(( $OPTIND - 1 ))
+    
+    ## Operations.
+    case "${ops}" in *V*) xrec_show_variables ;; esac
+    case "${ops}" in *l*) xrec_list_jobs      ;; esac
+    case "${ops}" in *r*) xrec_record "${1}"  ;; esac
+    case "${ops}" in *p*) xrec_play   "${1}"  ;; esac
+    case "${ops}" in *c*) xrec_clean  "${1}"  ;; esac
+}
+xrec_show_variables() {
+    echo "XREC_DIRECTORY     : ${XREC_DIRECTORY}"
+    echo "XREC_TIMEBLOCK     : ${XREC_TIMEBLOCK}"
+    echo "XREC_BLOCKS        : ${XREC_BLOCKS}"
+    echo "XREC_VIDEO_SIZE    : ${XREC_VIDEO_SIZE}"
+}
+xrec_calc_variables() {
+    XREC_DIRECTORY="${XREC_DIRECTORY:-${HOME}/XREC}"
+    XREC_TIMEBLOCK="${XREC_TIMEBLOCK:-00:10:00}"
+    XREC_BLOCKS="${XREC_BLOCKS:-18}"
+    XREC_VIDEO_SIZE="${XREC_VIDEO_SIZE:-$((1920 + 1366))x1080}"
+}
+## -------------------------------------------------------------------
+xrec_record() {
+    local dir mkv
+    
+    dir="$(xrec_get_directory "${1}")"; test -n "${dir}"
+    
+    while true; do
+        
+        ## Remove old videos.
+        xrec_ls_mkv_old "${dir}" "${XREC_BLOCKS}" | while read -r mkv; do
+            rm -vf "${mkv}" >&2
+        done
+        
+        ## Record new video.
+        mkv="${dir}/$(xrec_get_name).mkv"
+        echo "Recording ${mkv} ..." >&2
+        xrec_record_mkv "${mkv}" "${XREC_VIDEO_SIZE}" "${XREC_TIMEBLOCK}"
+        
+    done
+}
+xrec_play() {
+    local dir mkvs
+    
+    dir="$(xrec_get_directory "${1}")"; test -n "${dir}"
+    mkvs="$(xrec_ls_mkv_new "${dir}" "${XREC_BLOCKS}")"
+    
+    if test -n "${mkvs}"; then
+        mpv --no-border --ontop-level=window --on-all-workspaces --geometry=0:0 ${mkvs} </dev/null
+    else
+        echo >&2 "error: No recordings for $1"
+        return 1
+    fi  
+}
+xrec_clean() {
+    local dir
+    dir="$(xrec_get_directory "${1}")"; test -n "${dir}"
+    find "${dir}" -type f -delete
+}
+
+
+## -------------------------------------------------------------------
+xrec_record_mkv() { # MKV VIDEO_SIZE DURATION
+    local mkv="$1" vs="$2" t="$3"
+    if test ! -n "${DISPLAY}"; then
+        echo >&2 "error: DISPLAY not available."
+        return 1
+    fi
+    ffmpeg -hide_banner        \
+           `: Input info`      \
+           -f x11grab          \
+           -video_size "${vs}" \
+           -framerate 30       \
+           -i "${DISPLAY}"     \
+           `: Effect`          \
+           -vf "vignette=mode=backward" \
+           `: Output info`     \
+           -vcodec libx264     \
+           -preset ultrafast   \
+           -qp 0               \
+           -pix_fmt yuv444p    \
+           -t "${t}"           \
+           "${mkv}" > "${mkv}.log" 2>&1
+}
+## -------------------------------------------------------------------
+xrec_list_jobs() {
+    if test -d "${XREC_DIRECTORY}"; then
+        find "${XREC_DIRECTORY}" \
+             -mindepth 1 -maxdepth 1 -type d \
+             -exec 'basename' '{}' ';'
+    fi
+}
+xrec_get_directory() { # JOB
+    local job="$1"
+    if test ! -n "${job}"; then
+        echo >&2
+        xrec_list_jobs >&2
+        echo >&2
+        echo >&2 "error: Please specify a job name."
+        return 1
+    fi
+    if test ! -d "${XREC_DIRECTORY}/${job}"; then
+        echo >&2 "error: The job does not exist, create a directory"
+        echo >&2 "in the following path: ${XREC_DIRECTORY}/${job}"
+        return 1
+    fi
+    echo "${XREC_DIRECTORY}/${job}"
+}
+xrec_get_name() {
+    date '+%Y%m%d-%H%m%S'
+}
+xrec_ls_mkv() { # DIR
+    local d="$1"
+    find "${d}" -type f -name '*.mkv' | sort
+}
+xrec_ls_mkv_old() { # DIR NUM
+    xrec_ls_mkv "$1" | head -n -"$2"
+}
+xrec_ls_mkv_new() { # DIR NUM
+    xrec_ls_mkv "$1" | tail -n "$2"
+}
+## -------------------------------------------------------------------
+xrec_calc_variables
+if test @"${SCRNAME:-$(basename "$0")}" = @"xrec"; then
+    case "${1}" in
+        ''|-h|--help) sed -n 's/^ *#h: \{0,1\}//p' "$0";;
+        *)            xrec "$@"; exit 0;;
+    esac
+fi
